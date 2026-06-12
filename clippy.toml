@@ -1,0 +1,2 @@
+# provenance-mcp clippy config
+msrv = "1.85"

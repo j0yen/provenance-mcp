@@ -1,0 +1,37 @@
+[package]
+name = "provenance-mcp"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+description = "kernel-stamped file provenance and context snapshots over MCP"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/j0yen/provenance-mcp"
+
+[[bin]]
+name = "provenance-mcp"
+path = "src/main.rs"
+
+[lints.rust]
+unsafe_code = "deny"
+rust_2018_idioms = { level = "warn", priority = -1 }
+unused_must_use = "deny"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
+missing_errors_doc = "warn"
+missing_panics_doc = "warn"
+# Allow print_stderr for startup diagnostics
+print_stderr = "allow"
+
+[dependencies]
+mcp-core = { path = "../mcp-core", version = "0.1" }
+clap      = { version = "4", features = ["derive", "env"] }
+serde     = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow    = "1"
+sigpipe   = "0.1"
+
+[dev-dependencies]
+tempfile = "3"

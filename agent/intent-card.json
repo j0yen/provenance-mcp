@@ -1,0 +1,110 @@
+{
+  "schema": "autobuilder.intent_card.v1",
+  "prd_source": "/home/jsy/wintermute/PRDs/PRD-provenance-mcp.md",
+  "intent_slug": "provenance-mcp",
+  "root_motivation": "Expose two already-stable kernel surfaces — provfs xattr file provenance and memlog pre-compaction context snapshots — as MCP tools so any agent can attribute files and retrieve context history without shelling out getfattr/memlog directly.",
+  "user_persona": "Joe Yen running wintermute MCP clients (Claude Code, conduit agents) on his laptop; agents call tools/call over stdio to get file provenance or recent context snapshots during sessions.",
+  "unfakeable_metric": {
+    "name": "acceptance_tests_passing",
+    "lower_is_better": false,
+    "harness_command": "cargo test --workspace 2>&1 | grep -c 'test .* ok'",
+    "target": 7
+  },
+  "acceptance_criteria": [
+    {
+      "id": "AC1",
+      "level": "MUST",
+      "description": "cargo build --release produces provenance-mcp binary; cargo test green; MSRV 1.85; no let-chains; sigpipe::reset() is first call in main().",
+      "test": "tests/acceptance_ac1.rs — build succeeds; grep src/main.rs for sigpipe::reset() as first non-whitespace statement"
+    },
+    {
+      "id": "AC2",
+      "level": "MUST",
+      "description": "provenance-mcp serve completes initialize handshake and tools/list returns exactly two tools (file_provenance, memlog_recent) with valid JSON-Schema inputSchema.",
+      "test": "tests/acceptance_ac2.rs — drive serve via stdin/stdout pipe; assert tools array length == 2 and each has inputSchema.type == object"
+    },
+    {
+      "id": "AC3",
+      "level": "MUST",
+      "description": "file_provenance parses a fixtured getfattr -d output string into {path, session, ts} shape; a fixture with no prov xattrs yields session:null, ts:null and Ok (not error).",
+      "test": "tests/acceptance_ac3.rs — unit tests against two fixture strings: one with both xattrs, one empty"
+    },
+    {
+      "id": "AC4",
+      "level": "MUST",
+      "description": "Read-only by construction: a test asserts the only external verbs are getfattr (read) and memlog show; a guard rejects setfattr, memlog write, memlog clear appearing as command literals in backend.rs.",
+      "test": "tests/acceptance_ac4.rs — scan backend.rs source text at test time; assert forbidden verbs absent"
+    },
+    {
+      "id": "AC5",
+      "level": "MUST",
+      "description": "memlog_recent invokes memlog show --since <DUR> --limit <N> --format json and returns parsed array; verified against a stubbed memlog binary on PATH (offline, no real memlog needed).",
+      "test": "tests/acceptance_ac5.rs — write a stub memlog script to a tempdir, prepend to PATH, call memlog_recent, assert parsed output matches stub"
+    },
+    {
+      "id": "AC6",
+      "level": "MUST",
+      "description": "Missing required path on file_provenance → JSON-RPC error response, no panic, no shell call. Absent getfattr or memlog, serve still starts and affected tool returns clean ToolError (not crash).",
+      "test": "tests/acceptance_ac6.rs — call tool with missing path arg; assert error response; test serve with MEMLOG_BIN=nonexistent and GETFATTR_BIN=nonexistent, assert tools/list still works"
+    },
+    {
+      "id": "AC7",
+      "level": "MUST",
+      "description": "README.md documents both tools, the read-only guarantee, the provfs/memlog kernel dependency with graceful degradation notes, and an MCP client config snippet.",
+      "test": "tests/acceptance_ac7.rs — grep README.md for required sections: file_provenance, memlog_recent, read-only, provfs, MCP config"
+    }
+  ],
+  "scope": [
+    "Binary crate provenance-mcp with subcommand serve --memlog-bin",
+    "backend.rs: file_provenance() shells getfattr; memlog_recent() shells memlog show",
+    "tools.rs: two Tool impls with JSON-Schema inputSchema",
+    "main.rs: clap CLI, sigpipe::reset(), mcp_core::serve_stdio",
+    "Graceful ToolError when kernel features (provfs/memlog) are absent"
+  ],
+  "non_goals": [
+    "Not a write interface: no setfattr, no memlog write/clear",
+    "Not a provfs kernel module: consumes existing xattrs, does not stamp them",
+    "Not a network service: stdio MCP only",
+    "Not multi-user auth: single-user local tool",
+    "Not a general xattr browser: only user.prov.session and user.prov.ts"
+  ],
+  "hard_constraints": {
+    "rust_edition": "2021",
+    "target_kind": "cli",
+    "deny_unsafe": true,
+    "max_deps": 8,
+    "msrv": "1.85",
+    "additional": {
+      "sigpipe_reset_first": "sigpipe::reset() must be the first statement in main()",
+      "read_only_commands": "Only getfattr and memlog show are permitted as subprocess verbs"
+    }
+  },
+  "five_whys_trace": [
+    {
+      "why": 1,
+      "q": "Why expose provfs and memlog over MCP?",
+      "a": "Agents currently shell getfattr/memlog directly — fragile, not composable with MCP tool routing."
+    },
+    {
+      "why": 2,
+      "q": "Why does tool-routing matter?",
+      "a": "Conduit vision routes all forensic queries through MCP so any agent can call them without knowing local paths."
+    },
+    {
+      "why": 3,
+      "q": "Why provfs+memlog specifically and not a generic xattr browser?",
+      "a": "These are the two stable Phase-1.5 primitives the conduit survey identified: file attribution and context history. Other xattrs are out of scope."
+    }
+  ],
+  "ambiguities_resolved": [
+    {
+      "question": "Should kernel absence be an error or a graceful degradation?",
+      "resolution": "Graceful: serve starts regardless; individual tool calls return ToolError when getfattr or memlog binary is absent."
+    },
+    {
+      "question": "MSRV 1.85 vs 2024 edition?",
+      "resolution": "MSRV 1.85 (matching mcp-core); use edition 2021 which 1.85 supports. No let-chains (1.87+)."
+    }
+  ],
+  "created_at": "2026-06-11T00:00:00Z"
+}
