@@ -1,113 +1,51 @@
 # provenance-mcp
 
-An MCP (Model Context Protocol) server that exposes two **read-only** forensic
-tools over stdio:
+An MCP server that lets an agent ask two questions about its own past — where a file came from, and what it was thinking before the last compaction — and read the answers from the kernel, not from a story it tells itself.
 
-- **`file_provenance`** — queries kernel-stamped provfs xattrs (`user.prov.session`,
-  `user.prov.ts`) for a file path.
-- **`memlog_recent`** — retrieves recent pre-compaction context snapshots from the
-  memlog circular log.
+An agent's memory of what it did is reconstructed and unreliable. The kernel's record isn't. provfs stamps every write with the session and timestamp that produced it; memlog keeps the context that scrolled off before compaction. Both already exist below the agent. What was missing was a way to read them from inside a conversation. This is that — two read-only tools over MCP stdio, each a thin, honest window onto a kernel facility.
 
-Part of the [wintermute](https://github.com/j0yen/wintermute) ecosystem /
-[conduit vision](https://github.com/j0yen/wintermute/blob/master/visions/conduit.md).
-
----
-
-## Tools
+## The two tools
 
 ### `file_provenance`
 
-Query kernel-stamped provenance for a file.
+Reads the provfs provenance xattrs for a path.
 
-**Input schema:**
-```json
-{
-  "type": "object",
-  "properties": {
-    "path": { "type": "string", "description": "Absolute or relative path to the file." }
-  },
-  "required": ["path"]
-}
-```
-
-**Output:** `{ "path": "...", "session": "sess-abc123" | null, "ts": "1717200000" | null, "raw": "..." }`
-
-- `session` and `ts` are `null` when the file has no provenance xattrs — this is
-  normal for files outside the provfs-stamped scope (e.g. `/tmp`, `.git`, `target`).
-- Returns a `ToolError` if `getfattr` is not installed.
-
-**Graceful degradation:** If `getfattr` is absent or the provfs kernel module is not
-loaded, the tool returns a clean `ToolError` with an explanation — `serve` still starts
-and `tools/list` still works.
-
----
+- **Input:** `{ "path": "<absolute or relative path>" }`
+- **Output:** `{ "path", "session", "ts", "raw" }`. `session` and `ts` are the `user.prov.session` and `user.prov.ts` xattrs, or `null` when the file carries no provenance — which is the normal case for anything outside provfs's stamped scope (`/tmp`, `.git`, `target`). A file with no provenance is an answer, not an error.
+- **When `getfattr` is absent:** a clean `ToolError`, not a crash. `serve` still starts and `tools/list` still works.
 
 ### `memlog_recent`
 
-Retrieve recent pre-compaction context snapshots from memlog.
+Returns recent pre-compaction context snapshots by running `memlog show --since <DUR> --limit <N> --format json` and passing the array through.
 
-**Input schema:**
-```json
-{
-  "type": "object",
-  "properties": {
-    "since": { "type": "string", "description": "Duration string, e.g. '1h', '30m', '7d'." },
-    "limit": { "type": "integer", "minimum": 1, "maximum": 1000 }
-  }
-}
-```
+- **Input:** `{ "since"?: "1h" | "30m" | "7d", "limit"?: 1..1000 }`, both optional.
+- **Output:** the snapshot array from `memlog show`, fields untouched.
+- **When the `memlog` binary is absent:** a clean `ToolError`. The other tool keeps working.
 
-**Output:** JSON array of snapshot objects from `memlog show --format json`.
+## Read-only by construction
 
-**Graceful degradation:** If the `memlog` binary is absent (i.e. the wintermute kernel
-memlog module is not installed), the tool returns a clean `ToolError` — `serve` still
-starts and all other tools remain functional.
-
----
-
-## Read-only guarantee
-
-`provenance-mcp` is read-only by construction:
-
-- `file_provenance` runs **`getfattr`** (xattr reader). `setfattr` never appears in the
-  codebase.
-- `memlog_recent` runs **`memlog show`** only. The verbs `memlog write` and `memlog clear`
-  never appear in the codebase.
-
-This is enforced by a test (`acceptance_ac4.rs`) that scans `backend.rs` source at test
-time and fails if any forbidden verb appears.
-
----
+The point of a provenance tool is that you can trust it not to alter what it reports, so this server can't. `file_provenance` only ever runs `getfattr`; `memlog_recent` only ever runs `memlog show`. The write verbs — `setfattr`, `memlog write`, `memlog clear` — appear nowhere in the backend, and that isn't a promise, it's a test: `tests/acceptance_ac4.rs` scans `src/backend.rs` at test time and fails the build if any of them shows up. The guarantee is enforced by the same CI that builds the binary.
 
 ## Kernel dependencies
 
-| Feature | Kernel module | Graceful when absent? |
-|---------|--------------|----------------------|
-| File provenance xattrs | provfs LSM (`user.prov.session`, `user.prov.ts`) | Yes — returns `session:null, ts:null` |
-| Context snapshots | memlog circular log | Yes — returns ToolError |
+| Capability | Needs | When absent |
+|------------|-------|-------------|
+| file provenance | `getfattr` + the provfs LSM (`user.prov.*` xattrs) | `session`/`ts` come back `null`, or a `ToolError` if `getfattr` itself is missing |
+| context snapshots | the `memlog` binary + the memlog kernel module | a `ToolError` |
 
-If you are running a standard kernel (not wintermute), neither module is present.
-Both tools will return informative errors rather than crashing the server.
+On a stock kernel neither module is loaded. Both tools degrade to informative errors rather than taking the server down — see [provfs](https://github.com/j0yen/provfs) for the filesystem side.
 
----
-
-## Usage
+## Run it
 
 ```bash
-# Run the MCP server (reads from stdin, writes to stdout)
-provenance-mcp serve
-
-# Custom memlog binary path
-provenance-mcp serve --memlog-bin /path/to/memlog
-# or via env
-MEMLOG_BIN=/path/to/memlog provenance-mcp serve
+provenance-mcp serve                              # reads MCP from stdin, writes to stdout
+provenance-mcp serve --memlog-bin /path/to/memlog # point at a non-PATH memlog
+MEMLOG_BIN=/path/to/memlog provenance-mcp serve   # same, via env
 ```
-
----
 
 ## MCP client configuration
 
-Add to your Claude Code or other MCP client settings:
+Add to Claude Code (or any MCP client):
 
 ```json
 {
@@ -120,7 +58,7 @@ Add to your Claude Code or other MCP client settings:
 }
 ```
 
-Or with a custom memlog binary:
+With a non-PATH memlog:
 
 ```json
 {
@@ -133,21 +71,21 @@ Or with a custom memlog binary:
 }
 ```
 
----
-
 ## Build
 
+This crate depends on a sibling `mcp-core` crate by path (`../mcp-core`), so it builds from inside the wintermute workspace rather than on its own:
+
 ```bash
-cargo build --release
-# Binary at: target/release/provenance-mcp
+cargo build --release   # with ../mcp-core present alongside this checkout
+# binary: target/release/provenance-mcp
 ```
 
-MSRV: **1.85**
+MSRV 1.85.
 
----
+## Where it fits
+
+The MCP front door to wintermute's provenance plumbing: provfs writes the xattrs this reads, and memlog holds the snapshots this returns. `mcp-core` provides the stdio transport and `Tool` trait. Part of the [wintermute](https://github.com/j0yen/wintermute) / [conduit](https://github.com/j0yen/wintermute/blob/master/visions/conduit.md) line of work.
 
 ## License
 
-MIT OR Apache-2.0
-
-© 2026 Joe Yen
+MIT OR Apache-2.0 © 2026 Joe Yen
